@@ -25,6 +25,14 @@ class WindowsLauncherTests(unittest.TestCase):
         subprocess.run(['gcc', '-municode', str(ROOT / 'tests/windows_driver.c'),
                         str(cls.build / 'libcef.a'), '-o', str(cls.client)], check=True)
 
+        subprocess.run(['gcc', '-shared', '-DTEST_SPOTIFY_DLL', '-fuse-ld=lld',
+                        str(ROOT / 'tests/windows_driver.c'), str(cls.build / 'libcef.a'),
+                        '-Wl,--delayload=libcef.dll', '-ldelayimp',
+                        '-o', str(cls.build / 'Spotify.dll')], check=True)
+        cls.loader = cls.build / 'loader.exe'
+        subprocess.run(['gcc', '-municode', str(ROOT / 'tests/windows_loader.c'),
+                        '-o', str(cls.loader)], check=True)
+
     def launch(self, *args):
         return subprocess.run([str(self.build / 'spotify-filter.exe'),
                                '--spotify', str(self.client), *args],
@@ -48,6 +56,35 @@ class WindowsLauncherTests(unittest.TestCase):
                         break
                     time.sleep(0.05)
                 self.assertEqual(output.read_text(), expected)
+
+    def test_dynamically_loaded_core_with_delayed_cef_imports(self):
+        original = self.client
+        self.client = self.loader
+        try:
+            for url, expected in [
+                ('https://spclient.wg.spotify.com/ads/v3/ads', 'blocked 1'),
+                ('https://gew1-spclient.spotify.com/ad-logic/config', 'blocked 1'),
+                ('https://spclient.wg.spotify.com/connect-state/a b', 'forwarded 1'),
+            ]:
+                with self.subTest(url=url):
+                    output = self.build / 'delayed result.txt'
+                    output.unlink(missing_ok=True)
+                    # First show that the same native fixture runs without the filter.
+                    plain = subprocess.run([str(self.loader), url, str(output)],
+                                           capture_output=True, text=True, timeout=10)
+                    self.assertEqual(plain.returncode, 0, plain.stderr)
+                    self.assertEqual(output.read_text(), 'forwarded 1')
+                    output.unlink()
+                    result = self.launch(url, str(output))
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    deadline = time.monotonic() + 10
+                    while time.monotonic() < deadline:
+                        if output.exists() and output.read_text() == expected:
+                            break
+                        time.sleep(0.05)
+                    self.assertEqual(output.read_text(), expected)
+        finally:
+            self.client = original
 
     def test_missing_dll_does_not_start_client(self):
         dll = self.build / 'spotify-filter.dll'

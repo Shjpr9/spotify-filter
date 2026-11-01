@@ -22,7 +22,7 @@ jobs:
         with:
           msystem: MINGW64
           update: true
-          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-python make
+          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-python mingw-w64-x86_64-lld make
       - run: make windows WINDOWS_CC=gcc
       - run: python -m unittest discover -s tests -v
       - name: Package Windows binaries

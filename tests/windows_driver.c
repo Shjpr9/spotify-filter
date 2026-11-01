@@ -9,11 +9,16 @@ __declspec(dllimport) void *cef_urlrequest_create(struct cef_request *, void *, 
 __declspec(dllimport) int strings_freed(void);
 static struct cef_string value;
 static struct cef_string *get_url(struct cef_request *request) { (void)request; return &value; }
+#ifdef TEST_SPOTIFY_DLL
+__declspec(dllexport) int run_fixture(int argc, wchar_t **argv) {
+#else
 int wmain(int argc, wchar_t **argv) {
+#endif
     assert(argc == 3);
     value.str = (uint16_t *)argv[1];
     value.length = wcslen(argv[1]);
     struct cef_request request = {.size = sizeof(request), .get_url = get_url};
+    assert(strings_freed() == 0);
     void *result = cef_urlrequest_create(&request, (void *)(uintptr_t)1, (void *)(uintptr_t)2);
     assert(result == NULL || result == &request);
     FILE *output = _wfopen(argv[2], L"w");
