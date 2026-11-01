@@ -3,6 +3,8 @@
 #include <errno.h>
 #ifdef _WIN32
 #include <windows.h>
+#include <delayimp.h>
+#include <wchar.h>
 #define strncasecmp _strnicmp
 #else
 #include <dlfcn.h>
@@ -16,7 +18,24 @@
 
 static void *(*real_create)(struct cef_request *, void *, void *);
 static void (*free_string)(struct cef_string *);
-#ifndef _WIN32
+#ifdef _WIN32
+static INIT_ONCE symbols_once = INIT_ONCE_STATIC_INIT;
+
+static BOOL CALLBACK resolve_symbols(PINIT_ONCE once, void *parameter, void **context) {
+    (void)once;
+    (void)parameter;
+    (void)context;
+    HMODULE cef = GetModuleHandleW(L"libcef.dll");
+    if (!cef) return FALSE;
+    FARPROC create = GetProcAddress(cef, "cef_urlrequest_create");
+    FARPROC release = GetProcAddress(cef, "cef_string_userfree_utf16_free");
+    if (!create || !release) return FALSE;
+    _Static_assert(sizeof(create) == sizeof(real_create), "Pointer ABI mismatch");
+    memcpy(&real_create, &create, sizeof(create));
+    memcpy(&free_string, &release, sizeof(release));
+    return TRUE;
+}
+#else
 static pthread_once_t symbols_once = PTHREAD_ONCE_INIT;
 
 static void resolve_symbols(void) {
@@ -52,7 +71,12 @@ static int is_ad_url(const char *url, const char **path) {
 }
 
 void *cef_urlrequest_create(struct cef_request *request, void *client, void *context) {
-#ifndef _WIN32
+#ifdef _WIN32
+    if (!InitOnceExecuteOnce(&symbols_once, resolve_symbols, NULL, NULL)) {
+        errno = ENOSYS;
+        return NULL;
+    }
+#else
     pthread_once(&symbols_once, resolve_symbols);
 #endif
     if (!real_create) { errno = ENOSYS; return NULL; }
@@ -84,37 +108,84 @@ void *cef_urlrequest_create(struct cef_request *request, void *client, void *con
 }
 
 #ifdef _WIN32
-/* Patch only Spotify's CEF import; no executable instructions or disk files change. */
-__declspec(dllexport) DWORD WINAPI initialize_filter(void *unused) {
-    (void)unused;
-    HMODULE cef = GetModuleHandleW(L"libcef.dll");
-    if (!cef) return 0;
-    FARPROC create = GetProcAddress(cef, "cef_urlrequest_create");
-    FARPROC release = GetProcAddress(cef, "cef_string_userfree_utf16_free");
-    if (!create || !release) return 0;
-    /* memcpy avoids casts between incompatible Windows function pointer types. */
-    _Static_assert(sizeof(create) == sizeof(real_create), "Pointer ABI mismatch");
-    memcpy(&real_create, &create, sizeof(create));
-    memcpy(&free_string, &release, sizeof(release));
-    BYTE *image = (BYTE *)GetModuleHandleW(NULL);
+static int patch_thunks(BYTE *image, DWORD names_rva, DWORD slots_rva,
+                        const char *symbol, ULONG_PTR replacement) {
+    if (!names_rva || !slots_rva) return 0;
+    IMAGE_THUNK_DATA64 *names = (IMAGE_THUNK_DATA64 *)(image + names_rva);
+    IMAGE_THUNK_DATA64 *slots = (IMAGE_THUNK_DATA64 *)(image + slots_rva);
+    for (; names->u1.AddressOfData; ++names, ++slots) {
+        if (IMAGE_SNAP_BY_ORDINAL64(names->u1.Ordinal)) continue;
+        IMAGE_IMPORT_BY_NAME *entry = (IMAGE_IMPORT_BY_NAME *)(image + names->u1.AddressOfData);
+        if (strcmp((char *)entry->Name, symbol)) continue;
+        if (slots->u1.Function == replacement) return 1;
+        DWORD previous, ignored;
+        if (!VirtualProtect(&slots->u1.Function, sizeof(ULONG_PTR), PAGE_READWRITE, &previous)) return -1;
+        InterlockedExchangePointer((void *volatile *)&slots->u1.Function, (void *)replacement);
+        if (!VirtualProtect(&slots->u1.Function, sizeof(ULONG_PTR), previous, &ignored)) return -1;
+        return 1;
+    }
+    return 0;
+}
+
+static int patch_import(HMODULE module, const char *dll, const char *symbol, ULONG_PTR replacement) {
+    BYTE *image = (BYTE *)module;
     IMAGE_DOS_HEADER *dos = (IMAGE_DOS_HEADER *)image;
     IMAGE_NT_HEADERS64 *nt = (IMAGE_NT_HEADERS64 *)(image + dos->e_lfanew);
     DWORD rva = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
-    if (!rva) return 0;
-    IMAGE_IMPORT_DESCRIPTOR *imports = (IMAGE_IMPORT_DESCRIPTOR *)(image + rva);
-    for (; imports->Name; ++imports) {
-        if (_stricmp((char *)(image + imports->Name), "libcef.dll")) continue;
-        IMAGE_THUNK_DATA64 *slot = (IMAGE_THUNK_DATA64 *)(image + imports->FirstThunk);
-        for (; slot->u1.Function; ++slot) {
-            if (slot->u1.Function != (ULONG_PTR)create) continue;
-            DWORD previous, ignored;
-            if (!VirtualProtect(&slot->u1.Function, sizeof(ULONG_PTR), PAGE_READWRITE, &previous)) return 0;
-            slot->u1.Function = (ULONG_PTR)cef_urlrequest_create;
-            if (!VirtualProtect(&slot->u1.Function, sizeof(ULONG_PTR), previous, &ignored)) return 0;
-            return 1;
+    if (rva) {
+        IMAGE_IMPORT_DESCRIPTOR *imports = (IMAGE_IMPORT_DESCRIPTOR *)(image + rva);
+        for (; imports->Name; ++imports) {
+            if (_stricmp((char *)(image + imports->Name), dll)) continue;
+            int result = patch_thunks(image, imports->OriginalFirstThunk, imports->FirstThunk, symbol, replacement);
+            if (result) return result;
         }
     }
-    // shortcut: direct main-executable CEF imports only; revisit if Spotify switches to dynamic lookup.
+    rva = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT].VirtualAddress;
+    if (rva) {
+        const ImgDelayDescr *imports = (const ImgDelayDescr *)(image + rva);
+        for (; imports->rvaDLLName; ++imports) {
+            if (!(imports->grAttrs & dlattrRva) || _stricmp((char *)(image + imports->rvaDLLName), dll)) continue;
+            int result = patch_thunks(image, imports->rvaINT, imports->rvaIAT, symbol, replacement);
+            if (result) return result;
+        }
+    }
     return 0;
+}
+
+static HMODULE WINAPI filtered_load_library(const wchar_t *path, HANDLE file, DWORD flags) {
+    HMODULE module = LoadLibraryExW(path, file, flags);
+    DWORD error = GetLastError();
+    /* Inspection mappings must remain untouched and must not initialize code. */
+    DWORD inspection = DONT_RESOLVE_DLL_REFERENCES | LOAD_LIBRARY_AS_DATAFILE |
+                       LOAD_LIBRARY_AS_DATAFILE_EXCLUSIVE | LOAD_LIBRARY_AS_IMAGE_RESOURCE;
+    if (module && !(flags & inspection)) {
+        wchar_t filename[32768];
+        DWORD length = GetModuleFileNameW(module, filename, 32768);
+        const wchar_t *name = length && length < 32768 ? wcsrchr(filename, L'\\') : NULL;
+        if (name && !_wcsicmp(name + 1, L"Spotify.dll") &&
+                patch_import(module, "libcef.dll", "cef_urlrequest_create", (ULONG_PTR)cef_urlrequest_create) != 1) {
+            fputs("spotify-filter: Spotify.dll has no supported CEF request import; startup stopped.\n", stderr);
+            FreeLibrary(module);
+            SetLastError(ERROR_PROC_NOT_FOUND);
+            return NULL;
+        }
+    }
+    SetLastError(error);
+    return module;
+}
+
+__declspec(dllexport) DWORD WINAPI initialize_filter(void *unused) {
+    (void)unused;
+    HMODULE main = GetModuleHandleW(NULL);
+    int result = patch_import(main, "libcef.dll", "cef_urlrequest_create", (ULONG_PTR)cef_urlrequest_create);
+    if (result) return result == 1 ? 1 : ERROR_ACCESS_DENIED;
+    HMODULE core = GetModuleHandleW(L"Spotify.dll");
+    if (core) {
+        result = patch_import(core, "libcef.dll", "cef_urlrequest_create", (ULONG_PTR)cef_urlrequest_create);
+        return result == 1 ? 1 : ERROR_PROC_NOT_FOUND;
+    }
+    // shortcut: Spotify.dll loads through the executable's LoadLibraryExW; revisit if startup changes.
+    result = patch_import(main, "KERNEL32.dll", "LoadLibraryExW", (ULONG_PTR)filtered_load_library);
+    return result == 1 ? 1 : ERROR_PROC_NOT_FOUND;
 }
 #endif

@@ -36,7 +36,7 @@ clients, and ARM64 clients are unsupported. No administrator access is required.
 Build in the **MSYS2 MinGW64** terminal with GCC and Make installed:
 
 ```sh
-pacman -S --needed mingw-w64-x86_64-gcc make mingw-w64-x86_64-python
+pacman -S --needed mingw-w64-x86_64-gcc make mingw-w64-x86_64-python mingw-w64-x86_64-lld
 make windows WINDOWS_CC=gcc
 python -m unittest discover -s tests -v
 ```
@@ -53,17 +53,21 @@ The default client path is `%APPDATA%\Spotify\Spotify.exe`. Other arguments
 are forwarded to Spotify with Windows quoting, including spaces and Unicode.
 `--skip-update` is a Linux spotify-launcher option and is unnecessary here.
 
-The launcher starts a new process suspended, loads the filter DLL, replaces
-Spotify's `cef_urlrequest_create` import in memory, then resumes startup. If the
-hook cannot be installed, the new process is stopped and the launcher reports
-failure. Spotify files and system settings are unchanged. To disable filtering,
+The launcher starts a new process suspended, loads the filter DLL, then resumes
+startup with an import hook installed. It handles direct CEF imports and the
+`Spotify.dll` loaded through the executable's `LoadLibraryExW` import, including
+its delayed `cef_urlrequest_create` import. Inspection mappings are left alone.
+If the initial hook cannot be installed, the new process is stopped. If the
+loaded core lacks a supported CEF import, its load fails with an error. Spotify files and system settings are unchanged. To disable filtering,
 quit Spotify and start it normally. Security software may block DLL loading.
 
-Coverage is limited to the main executable's direct `libcef.dll` import. Dynamic
-symbol lookup, other modules, subprocesses, and other networking APIs are outside
-this hook's coverage. A future Spotify build may not expose the expected import.
-Windows playback has not been verified in this Linux workspace; the Windows CI
-workflow builds the launcher and DLL and runs a native CEF fixture integration test.
+The DLL and delay-import layout was verified in the official Windows x64 package
+for Spotify `1.3.6.1921.g7086c071a617`. Other loader paths, dynamic symbol lookup,
+other modules, subprocesses, and other networking APIs are outside this hook's
+coverage. A future Spotify build may change the layout.
+Windows playback has not been verified in this Linux workspace; the CI workflow
+runs native integration tests for direct imports and dynamically loaded cores
+with delayed CEF imports.
 Download its `spotify-filter-windows-x64` artifact after a successful run.
 
 ## Linux
