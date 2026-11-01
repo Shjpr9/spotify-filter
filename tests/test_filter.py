@@ -7,6 +7,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@unittest.skipIf(os.name == "nt", "Linux LD_PRELOAD tests")
 class FilterTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -67,6 +68,7 @@ class FilterTests(unittest.TestCase):
                 self.assertEqual(self.request("https://spclient.wg.spotify.com/ads/v3/ads", mode).stdout.strip(), "forwarded")
 
 
+@unittest.skipIf(os.name == "nt", "Linux launcher tests")
 class LauncherTests(unittest.TestCase):
     def test_wrapper_preserves_arguments_and_preload(self):
         with tempfile.TemporaryDirectory() as folder:

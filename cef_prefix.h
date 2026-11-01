@@ -3,7 +3,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* Stable prefix of CEF's public reference-counted request API on Linux x86_64. */
+/* Stable prefix of CEF's public reference-counted request API on Linux x86_64 and Windows x64. */
 struct cef_string {
     uint16_t *str;
     size_t length;

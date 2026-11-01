@@ -1,12 +1,52 @@
 # Spotify request filter
 
-A small Linux x86_64 launcher for the Spotify client managed by
-`spotify-launcher`. It filters ad-related Chromium requests.
+A small launcher that filters ad-related Chromium requests in desktop Spotify.
+This branch adds Windows x64 support; the Linux launcher remains available.
 
-- Ad filtering runs inside Spotify through an `LD_PRELOAD` library.
+- Ad filtering runs inside Spotify through a library loaded by the launcher.
 - Spotify's installed files, audio routing, firewall and DNS are unchanged.
 
-## Requirements
+## Windows x64
+
+Use the desktop Spotify installer from Spotify. Microsoft Store installs, 32-bit
+clients, and ARM64 clients are unsupported. No administrator access is required.
+
+Build in the **MSYS2 MinGW64** terminal with GCC and Make installed:
+
+```sh
+pacman -S --needed mingw-w64-x86_64-gcc make mingw-w64-x86_64-python
+make windows WINDOWS_CC=gcc
+python -m unittest discover -s tests -v
+```
+
+Keep `spotify-filter.exe` and `spotify-filter.dll` together. Quit Spotify,
+including its tray icon, then double-click `spotify-filter.exe` or run:
+
+```powershell
+.\spotify-filter.exe
+.\spotify-filter.exe --spotify "C:\path to\Spotify.exe" "spotify:track:TRACK_ID"
+```
+
+The default client path is `%APPDATA%\Spotify\Spotify.exe`. Other arguments
+are forwarded to Spotify with Windows quoting, including spaces and Unicode.
+`--skip-update` is a Linux spotify-launcher option and is unnecessary here.
+
+The launcher starts a new process suspended, loads the filter DLL, replaces
+Spotify's `cef_urlrequest_create` import in memory, then resumes startup. If the
+hook cannot be installed, the new process is stopped and the launcher reports
+failure. Spotify files and system settings are unchanged. To disable filtering,
+quit Spotify and start it normally. Security software may block DLL loading.
+
+Coverage is limited to the main executable's direct `libcef.dll` import. Dynamic
+symbol lookup, other modules, subprocesses, and other networking APIs are outside
+this hook's coverage. A future Spotify build may not expose the expected import.
+Windows playback has not been verified in this Linux workspace; the Windows CI
+workflow builds both binaries and runs a native CEF fixture integration test.
+Download its `spotify-filter-windows-x64` artifact after a successful run.
+
+## Linux
+
+### Requirements
 
 For ad filtering:
 
@@ -14,7 +54,7 @@ For ad filtering:
 - Bash and `pgrep`.
 - A C compiler and Make to build the library.
 
-## Build and launch
+### Build and launch
 
 From the cloned project directory:
 
@@ -47,7 +87,7 @@ cached ads, sponsor audio embedded in podcasts, and future Spotify changes are
 outside its verified coverage. Failed ad requests may cause retries or stalled
 playback. If playback fails, quit and relaunch normally to compare.
 
-## Validation
+## Validation (Linux)
 
 ```sh
 make test
@@ -56,6 +96,7 @@ bash -n spotify-filter
 ```
 
 Tests cover request boundaries, CEF string ownership, launcher argument
-forwarding and preload behavior. A short playback check encountered no ads
-while the filter logged blocked ad requests.
+forwarding and preload behavior. Windows-only integration tests are skipped
+on Linux. The existing Linux implementation had a short playback check that
+encountered no ads while the filter logged blocked requests.
 
