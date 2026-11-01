@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+library="$script_dir/spotify-filter.so"
+if [[ "$library" == *[[:space:]:]* ]]; then
+    printf 'Move the filter to a path without spaces or colons; LD_PRELOAD splits those characters.\n' >&2
+    exit 1
+fi
+if [[ ! -r "$library" ]]; then
+    printf 'Build the filter first: make -C %q\n' "$script_dir" >&2
+    exit 1
+fi
+if pgrep -x spotify >/dev/null; then
+    printf 'Quit Spotify first so the new process can load the filter.\n' >&2
+    exit 1
+fi
+LD_PRELOAD="$library${LD_PRELOAD:+:$LD_PRELOAD}" exec spotify-launcher "$@"

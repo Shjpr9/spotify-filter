@@ -6,6 +6,28 @@ This branch adds Windows x64 support; the Linux launcher remains available.
 - Ad filtering runs inside Spotify through a library loaded by the launcher.
 - Spotify's installed files, audio routing, firewall and DNS are unchanged.
 
+## Downloads and releases
+
+The **Build and release** GitHub Actions workflow builds and tests Windows x64
+and Linux x86_64 on every push and pull request. Its artifacts contain:
+
+- `spotify-filter-windows-x64.zip`: the Windows launcher and DLL.
+- `spotify-filter-linux-x64.tar.gz`: the Linux launcher and shared library.
+
+Both archives include this README and the license. Extract the archive and keep
+the launcher beside its library. Linux downloads still require `spotify-launcher`
+with Spotify installed, Bash, and `pgrep`; no compiler is needed.
+
+To publish both archives on GitHub Releases, tag the desired commit and push it:
+
+```sh
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+A release is published only after both platform builds and tests succeed.
+Manual workflow runs produce artifacts; version-tag runs also publish a release.
+
 ## Windows x64
 
 Use the desktop Spotify installer from Spotify. Microsoft Store installs, 32-bit
@@ -41,7 +63,7 @@ Coverage is limited to the main executable's direct `libcef.dll` import. Dynamic
 symbol lookup, other modules, subprocesses, and other networking APIs are outside
 this hook's coverage. A future Spotify build may not expose the expected import.
 Windows playback has not been verified in this Linux workspace; the Windows CI
-workflow builds both binaries and runs a native CEF fixture integration test.
+workflow builds the launcher and DLL and runs a native CEF fixture integration test.
 Download its `spotify-filter-windows-x64` artifact after a successful run.
 
 ## Linux
