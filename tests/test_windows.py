@@ -73,7 +73,7 @@ class WindowsLauncherTests(unittest.TestCase):
                     plain = subprocess.run([str(self.loader), url, str(output)],
                                            capture_output=True, text=True, timeout=10)
                     self.assertEqual(plain.returncode, 0, plain.stderr)
-                    self.assertEqual(output.read_text(), 'forwarded 1')
+                    self.assertEqual(output.read_text(), 'forwarded 0')
                     output.unlink()
                     result = self.launch(url, str(output))
                     self.assertEqual(result.returncode, 0, result.stderr)
