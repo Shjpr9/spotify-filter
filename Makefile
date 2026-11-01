@@ -16,7 +16,7 @@ WINDOWS_CC ?= x86_64-w64-mingw32-gcc
 windows: spotify-filter.exe spotify-filter.dll
 
 spotify-filter.exe: windows/launcher.c windows/quote.h
-	$(WINDOWS_CC) $(CFLAGS) -std=c11 -Wall -Wextra -Werror -municode -o $@ windows/launcher.c
+	$(WINDOWS_CC) $(CFLAGS) -std=c11 -Wall -Wextra -Werror -municode -o $@ windows/launcher.c -lpsapi
 
 spotify-filter.dll: filter.c cef_prefix.h
 	$(WINDOWS_CC) $(CFLAGS) -std=c11 -Wall -Wextra -Werror -shared -o $@ filter.c

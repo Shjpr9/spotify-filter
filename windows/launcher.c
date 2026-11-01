@@ -6,6 +6,7 @@
 #endif
 #include <windows.h>
 #include <tlhelp32.h>
+#include <psapi.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <wchar.h>
@@ -24,16 +25,25 @@ static int spotify_running(void) {
     return found;
 }
 
-static HMODULE remote_module(DWORD pid, const wchar_t *name) {
-    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, pid);
-    if (snapshot == INVALID_HANDLE_VALUE) return NULL;
-    MODULEENTRY32W item = {.dwSize = sizeof(item)};
-    HMODULE result = NULL;
-    if (Module32FirstW(snapshot, &item)) do {
-        if (!_wcsicmp(item.szModule, name)) { result = item.hModule; break; }
-    } while (Module32NextW(snapshot, &item));
-    CloseHandle(snapshot);
-    return result;
+static HMODULE remote_module(HANDLE process, const wchar_t *name) {
+    /* Loader module lists are unavailable before a suspended process starts. */
+    ULONG_PTR address = 0;
+    MEMORY_BASIC_INFORMATION region;
+    while (VirtualQueryEx(process, (LPCVOID)address, &region, sizeof(region))) {
+        if (region.Type == MEM_IMAGE && region.BaseAddress == region.AllocationBase) {
+            wchar_t path[32768];
+            DWORD length = GetMappedFileNameW(process, region.AllocationBase, path, 32768);
+            if (length && length < 32768) {
+                const wchar_t *base = wcsrchr(path, L'\\');
+                if (base && !_wcsicmp(base + 1, name)) return (HMODULE)region.AllocationBase;
+            }
+        }
+        ULONG_PTR next = (ULONG_PTR)region.BaseAddress + region.RegionSize;
+        if (next <= address) break;
+        address = next;
+    }
+    SetLastError(ERROR_MOD_NOT_FOUND);
+    return NULL;
 }
 
 static int call_remote(HANDLE process, LPTHREAD_START_ROUTINE function, void *arg, DWORD *result) {
@@ -112,7 +122,7 @@ int wmain(int argc, wchar_t **argv) {
        loader initialization before invoking its start routine. */
     stage = "locating ntdll";
     HMODULE local_ntdll = GetModuleHandleW(L"ntdll.dll");
-    HMODULE remote_ntdll = remote_module(child.dwProcessId, L"ntdll.dll");
+    HMODULE remote_ntdll = remote_module(child.hProcess, L"ntdll.dll");
     FARPROC alert = GetProcAddress(local_ntdll, "NtTestAlert");
     DWORD bootstrap_result;
     if (!remote_ntdll || !alert) goto cleanup;
@@ -121,7 +131,7 @@ int wmain(int argc, wchar_t **argv) {
             (LPTHREAD_START_ROUTINE)((BYTE *)remote_ntdll +
                 ((ULONG_PTR)alert - (ULONG_PTR)local_ntdll)), NULL, &bootstrap_result)) goto cleanup;
     stage = "locating loader module";
-    HMODULE remote_owner = remote_module(child.dwProcessId, owner_name);
+    HMODULE remote_owner = remote_module(child.hProcess, owner_name);
     if (!remote_owner) goto cleanup;
     stage = "copying DLL path";
     SIZE_T bytes = (wcslen(library) + 1) * sizeof(wchar_t);
@@ -133,7 +143,7 @@ int wmain(int argc, wchar_t **argv) {
     if (!call_remote(child.hProcess, remote_load, remote_path, &result)) goto cleanup;
     /* A thread exit code truncates pointers on x64; enumerate the actual DLL base. */
     stage = "locating filter DLL";
-    HMODULE remote = remote_module(child.dwProcessId, L"spotify-filter.dll");
+    HMODULE remote = remote_module(child.hProcess, L"spotify-filter.dll");
     if (!remote) goto cleanup;
     LPTHREAD_START_ROUTINE remote_init = (LPTHREAD_START_ROUTINE)((BYTE *)remote +
         ((ULONG_PTR)initialize - (ULONG_PTR)local));
