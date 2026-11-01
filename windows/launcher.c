@@ -101,6 +101,8 @@ int wmain(int argc, wchar_t **argv) {
     STARTUPINFOW startup = {.cb = sizeof(startup)};
     PROCESS_INFORMATION child = {0};
     int ok = 0;
+    DWORD result = 0;
+    const char *stage = "starting process";
     void *remote_path = NULL;
     if (!CreateProcessW(spotify, command, NULL, NULL, FALSE, CREATE_SUSPENDED, NULL, NULL, &startup, &child)) {
         fprintf(stderr, "Cannot start Spotify (Windows error %lu).\n", GetLastError());
@@ -108,34 +110,42 @@ int wmain(int argc, wchar_t **argv) {
     }
     /* A suspended process may only have ntdll mapped. A remote thread runs
        loader initialization before invoking its start routine. */
+    stage = "locating ntdll";
     HMODULE local_ntdll = GetModuleHandleW(L"ntdll.dll");
     HMODULE remote_ntdll = remote_module(child.dwProcessId, L"ntdll.dll");
     FARPROC alert = GetProcAddress(local_ntdll, "NtTestAlert");
     DWORD bootstrap_result;
-    if (!remote_ntdll || !alert || !call_remote(child.hProcess,
+    if (!remote_ntdll || !alert) goto cleanup;
+    stage = "initializing process loader";
+    if (!call_remote(child.hProcess,
             (LPTHREAD_START_ROUTINE)((BYTE *)remote_ntdll +
                 ((ULONG_PTR)alert - (ULONG_PTR)local_ntdll)), NULL, &bootstrap_result)) goto cleanup;
+    stage = "locating loader module";
     HMODULE remote_owner = remote_module(child.dwProcessId, owner_name);
     if (!remote_owner) goto cleanup;
+    stage = "copying DLL path";
     SIZE_T bytes = (wcslen(library) + 1) * sizeof(wchar_t);
     remote_path = VirtualAllocEx(child.hProcess, NULL, bytes, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     if (!remote_path || !WriteProcessMemory(child.hProcess, remote_path, library, bytes, NULL)) goto cleanup;
     LPTHREAD_START_ROUTINE remote_load = (LPTHREAD_START_ROUTINE)((BYTE *)remote_owner +
         ((ULONG_PTR)load - (ULONG_PTR)owner));
-    DWORD result;
+    stage = "loading filter DLL";
     if (!call_remote(child.hProcess, remote_load, remote_path, &result)) goto cleanup;
     /* A thread exit code truncates pointers on x64; enumerate the actual DLL base. */
+    stage = "locating filter DLL";
     HMODULE remote = remote_module(child.dwProcessId, L"spotify-filter.dll");
     if (!remote) goto cleanup;
     LPTHREAD_START_ROUTINE remote_init = (LPTHREAD_START_ROUTINE)((BYTE *)remote +
         ((ULONG_PTR)initialize - (ULONG_PTR)local));
+    stage = "installing CEF hook";
     if (!call_remote(child.hProcess, remote_init, NULL, &result) || result != 1) goto cleanup;
+    stage = "resuming process";
     if (ResumeThread(child.hThread) == (DWORD)-1) goto cleanup;
     ok = 1;
 cleanup:
     if (child.hProcess) {
         if (!ok) {
-            fputs("Filter initialization failed; Spotify was stopped. This version may use an unsupported CEF import.\n", stderr);
+            fprintf(stderr, "Filter initialization failed at %s (Windows error %lu, thread result %lu); Spotify was stopped.\n", stage, GetLastError(), result);
             TerminateProcess(child.hProcess, 1);
             WaitForSingleObject(child.hProcess, INFINITE);
         }
